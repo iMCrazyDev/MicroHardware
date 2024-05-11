@@ -13,6 +13,8 @@
 #include <SPI.h>
 #include <ArduinoJson.h>
 #include <AM2302-Sensor.h>
+#include <SoftwareSerial.h>
+#include <TinyGPS.h>
 // #include "test.pb.h"
 // #include "pb_encode.h"
 //#include <printf.h>
@@ -47,17 +49,28 @@ struct payload_t {
 
 struct SensorData {
     int32_t guid;
-    int32_t dht_status;
+    //int32_t dht_status;
     float hum_value;
     float temp_value;
-    int32_t gas_status;
+    //int32_t gas_status;
     float gas_value;
+    float flat;
+    float flon;
+    int32_t light_level;
+    int32_t loud_level; 
     char hardware_name[10] = "arduiuno02";
 };
 SensorData sensor_data;
 
 void setup() {
   Serial.begin(115200);
+  gps_serial.begin(9600);
+  pinMode(soundSensorPin, INPUT); // Устанавливаем пин датчика звука как вход
+  pinMode(lightSensorPin, INPUT); // Устанавливаем пин датчика звука как вход
+  sensor_data.light_level = 0;
+  sensor_data.loud_level = 0;
+  sensor_data.flat = 0;
+  sensor_data.flon = 0;
   /*while (!Serial) {
     // some boards need this because of native USB capability
   }*/
@@ -97,10 +110,13 @@ void collectDHT() {
   auto status = am2302.read();
   float hum = 0.0;
   float temp = 0.0;
-  sensor_data.dht_status = status;
+  //sensor_data.dht_status = status;
   if (status == 0) {
     temp = am2302.get_Temperature();
     hum = am2302.get_Humidity();
+  } else {
+    temp = -20000;
+    hum = -20000;
   }
   sensor_data.hum_value = hum;
   sensor_data.temp_value = temp;
@@ -109,14 +125,104 @@ void collectDHT() {
 #define MQ_PIN 5
 
 void collectMQ2() {
-  sensor_data.gas_status = 0;
+  //sensor_data.gas_status = 0;
 
   if (displayTimer < 20000) {
-    sensor_data.gas_value = 0;
+    sensor_data.gas_value = -20000;
   } else {
     auto sensorValue = analogRead(MQ_PIN);
     sensor_data.gas_value = sensorValue;
   }
+}
+
+const int soundSensorPin = A0; // Пин, к которому подключен датчик звука
+const int lightSensorPin = A1; // Пин, к которому подключен датчик звука
+const int numReadings = 10; // Количество измерений для вычисления среднего значения
+long totalSound = 0;
+int soundCount = 0;
+long totalLight = 0;
+int lightCount = 0;
+
+void updateSoundLevel() {
+  int soundValue = analogRead(soundSensorPin); // Считываем значение с датчика звука
+  totalSound += soundValue; // Суммируем значение громкости
+  soundCount++;
+
+  if (soundCount == numReadings) {
+
+    int averageSound = totalSound / numReadings;
+    // Выводим среднее значение на монитор порта
+    Serial.print("Sound ");
+    Serial.println(averageSound);
+    sensor_data.loud_level = averageSound;
+    // Сбрасываем счетчик измерений и сумму для следующей итерации
+    soundCount = 0;
+    totalSound = 0;
+  }
+}
+
+void updateLightLevel() {
+  int lightValue = analogRead(soundSensorPin); // Считываем значение с датчика звука
+  totalLight += lightValue; // Суммируем значение громкости
+  lightCount++;
+
+  if (lightCount == numReadings) {
+
+    int averageLight = totalLight / numReadings;
+    // Выводим среднее значение на монитор порта
+    Serial.print("Light ");
+    Serial.println(averageLight);
+    sensor_data.light_level = averageLight;
+    // Сбрасываем счетчик измерений и сумму для следующей итерации
+    lightCount = 0;
+    totalLight = 0;
+  }
+}
+
+TinyGPS gps;
+SoftwareSerial gps_serial(5, 4);
+
+void updateGPS() {
+  bool newData = false;
+  unsigned long chars;
+  unsigned short sentences, failed;
+
+  // For one second we parse GPS data and report some key values
+  for (unsigned long start = millis(); millis() - start < 1000;)
+  {
+    while (ss.available())
+    {
+      char c = ss.read();
+      // Serial.write(c); // uncomment this line if you want to see the GPS data flowing
+      if (gps.encode(c)) // Did a new valid sentence come in?
+        newData = true;
+    }
+  }
+
+  if (newData)
+  {
+    float flat, flon;
+    unsigned long age;
+    gps.f_get_position(&flat, &flon, &age);
+    Serial.print("LAT=");
+    Serial.print(flat == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : flat, 6);
+    Serial.print(" LON=");
+    Serial.print(flon == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : flon, 6);
+    Serial.print(" SAT=");
+    Serial.print(gps.satellites() == TinyGPS::GPS_INVALID_SATELLITES ? 0 : gps.satellites());
+    Serial.print(" PREC=");
+    Serial.print(gps.hdop() == TinyGPS::GPS_INVALID_HDOP ? 0 : gps.hdop());
+  }
+  
+  /*gps.stats(&chars, &sentences, &failed);
+  Serial.print(" CHARS=");
+  Serial.print(chars);
+  Serial.print(" SENTENCES=");
+  Serial.print(sentences);
+  Serial.print(" CSUM ERR=");
+  Serial.println(failed);
+  if (chars == 0)
+    Serial.println("** No characters received from GPS: check wiring **");*/
 }
 
 void collectJson() {
@@ -129,7 +235,9 @@ void collectJson() {
 void loop() {
 
   mesh.update();
-
+  updateLightLevel();
+  updateSoundLevel();
+  updateGPS();
   // Send to the master node every second
   if (millis() - displayTimer >= 20000) {
     displayTimer = millis();
@@ -167,4 +275,5 @@ void loop() {
     Serial.print(" at ");
     Serial.println(payload.ms);
   }
+  delay(30);
 }
